@@ -70,6 +70,9 @@ export async function createProductionController(ctx, config = {}, internals = {
     ? null
     : { sandbox: 'workspace-write', approval: 'ask' };
   const approvalTimeoutMs = Number.isInteger(approvals.timeoutMs) ? approvals.timeoutMs : 300_000;
+  const resultPreviewChars = Number.isInteger(config.progress?.resultPreviewChars)
+    ? config.progress.resultPreviewChars
+    : 600;
   const configStore = await new ConfigStore(paths.config).load();
   const stateStores = new Map();
 
@@ -108,6 +111,7 @@ export async function createProductionController(ctx, config = {}, internals = {
         replyTimeoutMs: config.replyTimeoutMs ?? 600_000,
         maxMessageChars: config.maxMessageChars ?? 4_000,
         approvalTimeoutMs,
+        resultPreviewChars,
         logger: {
           error: (...args) => logger.error?.(`[${botId}]`, ...args),
           warn: (...args) => logger.warn?.(`[${botId}]`, ...args),

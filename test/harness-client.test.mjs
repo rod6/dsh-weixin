@@ -46,3 +46,51 @@ test('reply tracker ignores interleaved turns and older events', () => {
   assert.equal(tracker.answer, '');
   assert.equal(tracker.finished, false);
 });
+
+function toolResultEvent(seq, text) {
+  return { event: {
+    seq,
+    type: 'tool/result',
+    data: {
+      turn: 1,
+      step: 0,
+      message: { content: [{ type: 'tool-result', toolCallId: 'c1', content: text ? [{ type: 'text', text }] : [] }] },
+    },
+  } };
+}
+
+test('reply tracker forwards the actual tool result text instead of a placeholder', () => {
+  const tracker = new HarnessReplyTracker({ promptRpcId: 'p', afterSeq: 0 });
+  const call = tracker.consume([
+    { event: { seq: 1, type: 'turn/start', data: { turn: 1 } } },
+    { event: { seq: 2, type: 'user/message', data: { turn: 1, source: { rpcId: 'p' } } } },
+    { event: { seq: 3, type: 'tool/call', data: { turn: 1, step: 0, callId: 'c1', name: 'fetch' } } },
+  ]);
+  assert.deepEqual(call, { type: 'tool', name: 'fetch' });
+  const result = tracker.consume([toolResultEvent(4, 'Fetch succeeded — title "具身智能中试"')]);
+  assert.deepEqual(result, { type: 'status', text: 'fetch 完成：Fetch succeeded — title "具身智能中试"' });
+});
+
+test('reply tracker truncates long tool results to the preview limit', () => {
+  const tracker = new HarnessReplyTracker({ promptRpcId: 'p', afterSeq: 0, resultPreviewChars: 10 });
+  tracker.consume([
+    { event: { seq: 1, type: 'turn/start', data: { turn: 1 } } },
+    { event: { seq: 2, type: 'user/message', data: { turn: 1, source: { rpcId: 'p' } } } },
+    { event: { seq: 3, type: 'tool/call', data: { turn: 1, step: 0, callId: 'c1', name: 'read' } } },
+  ]);
+  const result = tracker.consume([toolResultEvent(4, '一二三四五六七八九十甲')]);
+  assert.equal(result.type, 'status');
+  assert.match(result.text, /read 完成：一二三四五六七八九十/);
+  assert.match(result.text, /已截断/);
+});
+
+test('reply tracker falls back to a processing line when a tool result has no text', () => {
+  const tracker = new HarnessReplyTracker({ promptRpcId: 'p', afterSeq: 0 });
+  tracker.consume([
+    { event: { seq: 1, type: 'turn/start', data: { turn: 1 } } },
+    { event: { seq: 2, type: 'user/message', data: { turn: 1, source: { rpcId: 'p' } } } },
+    { event: { seq: 3, type: 'tool/call', data: { turn: 1, step: 0, callId: 'c1', name: 'bash' } } },
+  ]);
+  const result = tracker.consume([toolResultEvent(4, '')]);
+  assert.deepEqual(result, { type: 'status', text: '正在整理bash的结果…' });
+});

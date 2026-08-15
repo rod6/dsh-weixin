@@ -11,6 +11,17 @@ function assistantMessageText(event) {
     .trim();
 }
 
+/** Extract the text blocks of a tool/result event (the same content the web UI renders). */
+function toolResultText(event) {
+  const block = event?.data?.message?.content?.[0];
+  if (block?.type !== 'tool-result' || !Array.isArray(block.content)) return '';
+  return block.content
+    .filter((part) => part?.type === 'text' && typeof part.text === 'string')
+    .map((part) => part.text)
+    .join('\n')
+    .trim();
+}
+
 export class HarnessReplyTracker {
   #promptRpcId;
   #lastSeq;
@@ -20,10 +31,13 @@ export class HarnessReplyTracker {
   #latestText = '';
   #finished = false;
   #reason = null;
+  #lastToolName = null;
+  #resultPreviewChars;
 
-  constructor({ promptRpcId, afterSeq = -1 }) {
+  constructor({ promptRpcId, afterSeq = -1, resultPreviewChars = 600 }) {
     this.#promptRpcId = promptRpcId;
     this.#lastSeq = afterSeq;
+    this.#resultPreviewChars = resultPreviewChars;
   }
 
   get finished() {
@@ -96,9 +110,19 @@ export class HarnessReplyTracker {
       }
 
       if (event.type === 'tool/call') {
-        update = { type: 'tool', name: event.data?.name ?? '工具' };
+        this.#lastToolName = event.data?.name ?? '工具';
+        update = { type: 'tool', name: this.#lastToolName };
       } else if (event.type === 'tool/result') {
-        update = { type: 'status', text: '正在整理结果…' };
+        const text = toolResultText(event);
+        const name = this.#lastToolName ?? '工具';
+        if (text) {
+          const preview = text.length > this.#resultPreviewChars
+            ? `${text.slice(0, this.#resultPreviewChars)}…（已截断）`
+            : text;
+          update = { type: 'status', text: `${name} 完成：${preview}` };
+        } else {
+          update = { type: 'status', text: `正在整理${name}的结果…` };
+        }
       }
     }
     return update;
@@ -226,7 +250,11 @@ export class HarnessClient {
     const before = await this.rpc('session.history', { sessionId, maxMessages: 1 });
     const baselineSeq = Math.max(-1, ...(before.events ?? []).map(({ event }) => event.seq ?? -1));
     const promptRpcId = `weixin-${randomUUID()}`;
-    const tracker = new HarnessReplyTracker({ promptRpcId, afterSeq: baselineSeq });
+    const tracker = new HarnessReplyTracker({
+      promptRpcId,
+      afterSeq: baselineSeq,
+      resultPreviewChars: options.resultPreviewChars ?? 600,
+    });
 
     await this.rpc('session.prompt', {
       sessionId,

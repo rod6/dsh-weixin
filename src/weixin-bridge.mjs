@@ -53,6 +53,7 @@ export class WeixinHarnessBridge {
   #replyTimeoutMs;
   #maxMessageChars;
   #approvalTimeoutMs;
+  #resultPreviewChars;
   #queues = new Map();
   #pendingApprovals = new Map();
 
@@ -68,6 +69,7 @@ export class WeixinHarnessBridge {
     replyTimeoutMs = 600_000,
     maxMessageChars = 4_000,
     approvalTimeoutMs = 300_000,
+    resultPreviewChars = 600,
   }) {
     if (!api || typeof api.sendText !== 'function') throw new TypeError('Weixin API is required');
     if (!baseUrl || !token || !ownerUserId) throw new TypeError('Weixin account credentials are required');
@@ -83,6 +85,7 @@ export class WeixinHarnessBridge {
     this.#replyTimeoutMs = replyTimeoutMs;
     this.#maxMessageChars = maxMessageChars;
     this.#approvalTimeoutMs = approvalTimeoutMs;
+    this.#resultPreviewChars = resultPreviewChars;
   }
 
   get status() {
@@ -244,6 +247,7 @@ export class WeixinHarnessBridge {
       }
       const answer = await this.#harness.ask(sessionId, text, {
         timeoutMs: this.#replyTimeoutMs,
+        resultPreviewChars: this.#resultPreviewChars,
         onUpdate: async (update) => {
           if (update?.type === 'tool' && typeof update.name === 'string') {
             await this.#send(sender, `🔧 正在调用工具：${update.name}`, contextToken, runId);
