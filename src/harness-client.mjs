@@ -122,13 +122,15 @@ export class HarnessClient {
   #autostart;
   #dshBin;
   #managedProcess = null;
+  #onSessionCreated = null;
 
-  constructor({ baseUrl, workspace, agentPreset = 'standard', autostart = false, dshBin = 'dsh' }) {
+  constructor({ baseUrl, workspace, agentPreset = 'standard', autostart = false, dshBin = 'dsh', onSessionCreated = null }) {
     this.#baseUrl = new URL(baseUrl);
     this.#workspace = workspace;
     this.#agentPreset = agentPreset;
     this.#autostart = autostart;
     this.#dshBin = dshBin;
+    this.#onSessionCreated = onSessionCreated;
   }
 
   async rpc(method, payload = {}, timeoutMs = 30_000, options = {}) {
@@ -202,6 +204,7 @@ export class HarnessClient {
       workspaceId,
       agentPreset: this.#agentPreset,
     });
+    await this.#onSessionCreated?.(created.sessionId);
     return created.sessionId;
   }
 

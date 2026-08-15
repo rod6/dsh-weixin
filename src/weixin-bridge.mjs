@@ -17,6 +17,18 @@ function conversationKey(userId) {
   return `p2p:${userId}`;
 }
 
+const ALLOW_WORDS = new Set(['允许', '同意', '批准', '继续', '是', '好', 'ok', 'yes', 'allow', 'y', '1']);
+const DENY_WORDS = new Set(['拒绝', '取消', '禁止', '否', '不', 'no', 'deny', 'stop', 'n', '0']);
+
+/** Parse one inbound reply into an approval decision; null = not a decision. */
+function parseApprovalAnswer(text) {
+  const normalized = String(text ?? '').trim().toLowerCase();
+  if (!normalized) return null;
+  if (ALLOW_WORDS.has(normalized)) return true;
+  if (DENY_WORDS.has(normalized)) return false;
+  return null;
+}
+
 export function createWeixinBridgeStatus() {
   return {
     messagesReceived: 0,
@@ -40,7 +52,9 @@ export class WeixinHarnessBridge {
   #logger;
   #replyTimeoutMs;
   #maxMessageChars;
+  #approvalTimeoutMs;
   #queues = new Map();
+  #pendingApprovals = new Map();
 
   constructor({
     api,
@@ -53,6 +67,7 @@ export class WeixinHarnessBridge {
     logger = console,
     replyTimeoutMs = 600_000,
     maxMessageChars = 4_000,
+    approvalTimeoutMs = 300_000,
   }) {
     if (!api || typeof api.sendText !== 'function') throw new TypeError('Weixin API is required');
     if (!baseUrl || !token || !ownerUserId) throw new TypeError('Weixin account credentials are required');
@@ -67,6 +82,7 @@ export class WeixinHarnessBridge {
     this.#logger = logger;
     this.#replyTimeoutMs = replyTimeoutMs;
     this.#maxMessageChars = maxMessageChars;
+    this.#approvalTimeoutMs = approvalTimeoutMs;
   }
 
   get status() {
@@ -90,6 +106,76 @@ export class WeixinHarnessBridge {
     await Promise.allSettled([...this.#queues.values()]);
   }
 
+  /** Whether this account's mapped session is the given session. */
+  ownsSession(sessionId) {
+    return this.#state.sessionFor(conversationKey(this.#ownerUserId)) === sessionId;
+  }
+
+  /**
+   * Answer one harness approval/request from this account's owner over WeChat:
+   * sends the question, waits for the owner's 「允许」/「拒绝」 reply (or the
+   * request signal / a timeout), and resolves with the closed outcome. The
+   * returned promise CLAIMS the approval waterfall for this request.
+   */
+  async submitApproval(req) {
+    const userId = this.#ownerUserId;
+    const queue = this.#pendingApprovals.get(userId) ?? [];
+    const entry = {
+      req,
+      serial: queue.length + 1,
+      settled: false,
+      resolve: null,
+      timer: null,
+      onAbort: null,
+    };
+    const pending = new Promise((resolve) => {
+      entry.resolve = resolve;
+    });
+    queue.push(entry);
+    this.#pendingApprovals.set(userId, queue);
+
+    // Register the abort listener BEFORE any await: an abort landing while the
+    // question send is in flight would otherwise find no listener and leave
+    // the request pending forever (the same window the harness answerer
+    // guards). An already-aborted signal settles immediately.
+    if (req.signal) {
+      if (req.signal.aborted) {
+        this.#settle(entry, 'cancelled');
+        return pending;
+      }
+      entry.onAbort = () => this.#settle(entry, 'cancelled');
+      req.signal.addEventListener('abort', entry.onAbort, { once: true });
+    }
+    entry.timer = setTimeout(() => this.#settle(entry, 'rejected'), this.#approvalTimeoutMs);
+
+    const lines = [`🔒 需要你批准：${req.toolName}`];
+    if (req.reason) lines.push(`原因：${req.reason}`);
+    if (queue.length > 1) lines.push(`（第 ${entry.serial}/${queue.length} 个待批准请求）`);
+    lines.push('回复「允许」继续，或「拒绝」取消。');
+    try {
+      await this.#send(userId, lines.join('\n'), undefined, undefined);
+    } catch (error) {
+      this.#logger.warn?.('[dsh-weixin] failed to send an approval question:', error);
+    }
+    return pending;
+  }
+
+  #settle(entry, outcome) {
+    if (entry.settled) return;
+    entry.settled = true;
+    clearTimeout(entry.timer);
+    if (entry.req.signal && entry.onAbort) {
+      entry.req.signal.removeEventListener('abort', entry.onAbort);
+    }
+    const queue = this.#pendingApprovals.get(this.#ownerUserId);
+    if (queue) {
+      const index = queue.indexOf(entry);
+      if (index !== -1) queue.splice(index, 1);
+      if (queue.length === 0) this.#pendingApprovals.delete(this.#ownerUserId);
+    }
+    entry.resolve(outcome);
+  }
+
   async #process(message) {
     if (message?.message_type === 2) return;
     const messageId = weixinMessageId(message);
@@ -111,6 +197,22 @@ export class WeixinHarnessBridge {
     try {
       if (!text) {
         await this.#send(sender, '目前仅支持文字消息，以及微信已转成文字的语音消息。', contextToken, runId);
+        await this.#state.markSeen(messageId);
+        return;
+      }
+
+      const pending = this.#pendingApprovals.get(sender);
+      if (pending && pending.length > 0) {
+        const decision = parseApprovalAnswer(text);
+        if (decision !== null) {
+          const entry = pending[0];
+          const outcome = decision ? 'allowed-once' : 'rejected';
+          await this.#send(sender, decision ? '✅ 已允许。' : '🚫 已拒绝。', contextToken, runId);
+          await this.#state.markSeen(messageId);
+          this.#settle(entry, outcome);
+          return;
+        }
+        await this.#send(sender, `当前有 ${pending.length} 个待批准请求，请回复「允许」或「拒绝」。`, contextToken, runId);
         await this.#state.markSeen(messageId);
         return;
       }
@@ -140,7 +242,16 @@ export class WeixinHarnessBridge {
         sessionId = await this.#harness.createSession();
         await this.#state.setSession(key, sessionId);
       }
-      const answer = await this.#harness.ask(sessionId, text, { timeoutMs: this.#replyTimeoutMs });
+      const answer = await this.#harness.ask(sessionId, text, {
+        timeoutMs: this.#replyTimeoutMs,
+        onUpdate: async (update) => {
+          if (update?.type === 'tool' && typeof update.name === 'string') {
+            await this.#send(sender, `🔧 正在调用工具：${update.name}`, contextToken, runId);
+          } else if (update?.type === 'status' && typeof update.text === 'string') {
+            await this.#send(sender, `⏳ ${update.text}`, contextToken, runId);
+          }
+        },
+      });
       await this.#send(sender, answer, contextToken, runId);
       await this.#state.markSeen(messageId);
       this.#status.messagesReplied += 1;

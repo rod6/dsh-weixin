@@ -42,6 +42,7 @@ export class WeixinRuntime {
   #logger;
   #replyTimeoutMs;
   #maxMessageChars;
+  #approvalTimeoutMs;
   #status = createWeixinRuntimeStatus();
   #bridge = null;
   #abortController = null;
@@ -57,6 +58,7 @@ export class WeixinRuntime {
     logger = console,
     replyTimeoutMs = 600_000,
     maxMessageChars = 4_000,
+    approvalTimeoutMs = 300_000,
   }) {
     if (!api || !config || !token || !harness || !state) {
       throw new TypeError('WeixinRuntime requires API, account, token, Harness, and state');
@@ -69,10 +71,15 @@ export class WeixinRuntime {
     this.#logger = logger;
     this.#replyTimeoutMs = replyTimeoutMs;
     this.#maxMessageChars = maxMessageChars;
+    this.#approvalTimeoutMs = approvalTimeoutMs;
   }
 
   get status() {
     return structuredClone(this.#status);
+  }
+
+  get bridge() {
+    return this.#bridge;
   }
 
   async start() {
@@ -107,6 +114,7 @@ export class WeixinRuntime {
         logger: this.#logger,
         replyTimeoutMs: this.#replyTimeoutMs,
         maxMessageChars: this.#maxMessageChars,
+        approvalTimeoutMs: this.#approvalTimeoutMs,
       });
       this.#abortController = new AbortController();
       this.#status.ready = true;
