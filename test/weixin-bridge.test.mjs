@@ -111,3 +111,140 @@ test('bridge commands are local and internal failures return a generic message',
   assert.match(sent.at(-1), /消息处理失败/);
   assert.doesNotMatch(sent.at(-1), /private path|secret|token-shaped/);
 });
+
+function approvalBridge({ approvalTimeoutMs = 60_000, logger = { warn() {} } } = {}) {
+  const sent = [];
+  const fixture = stateFixture();
+  const status = createWeixinBridgeStatus();
+  const bridge = new WeixinHarnessBridge({
+    api: { sendText: async (request) => sent.push(request) },
+    baseUrl: 'https://ilinkai.weixin.qq.com/',
+    token: 'host-token',
+    ownerUserId: 'owner-user',
+    harness: {
+      ensureRunning: async () => true,
+      sessionExists: async () => true,
+      createSession: async () => 'session-1',
+      ask: async () => 'final-answer',
+    },
+    state: fixture.state,
+    status,
+    logger,
+    approvalTimeoutMs,
+  });
+  return { bridge, sent, fixture };
+}
+
+function approvalRequest(sessionId, { toolName = 'bash', reason = '写文件', signal } = {}) {
+  return {
+    agent: { session: { id: sessionId } },
+    toolName,
+    reason,
+    signal,
+  };
+}
+
+test('approval: the question reaches WeChat and 允许 settles allowed-once', async () => {
+  const { bridge, sent } = approvalBridge();
+  const outcome = bridge.submitApproval(approvalRequest('session-1'));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(sent.length, 1);
+  assert.match(sent[0].text, /需要你批准：bash/);
+  assert.match(sent[0].text, /原因：写文件/);
+  assert.match(sent[0].text, /允许/);
+  await bridge.accept(message('allow-1', '允许'));
+  assert.equal(await outcome, 'allowed-once');
+});
+
+test('approval: 拒绝 settles rejected', async () => {
+  const { bridge } = approvalBridge();
+  const outcome = bridge.submitApproval(approvalRequest('session-1'));
+  await bridge.accept(message('deny-1', '拒绝'));
+  assert.equal(await outcome, 'rejected');
+});
+
+test('approval: non-answer while pending gets a hint and stays pending', async () => {
+  const { bridge, sent } = approvalBridge();
+  const outcome = bridge.submitApproval(approvalRequest('session-1'));
+  await new Promise((resolve) => setImmediate(resolve));
+  const before = sent.length;
+  await bridge.accept(message('smalltalk-1', '你好吗'));
+  assert.equal(sent.length, before + 1);
+  assert.match(sent.at(-1).text, /待批准/);
+  await bridge.accept(message('allow-2', '允许'));
+  assert.equal(await outcome, 'allowed-once');
+});
+
+test('approval: pending request times out to rejected', async () => {
+  const { bridge } = approvalBridge({ approvalTimeoutMs: 20 });
+  const outcome = bridge.submitApproval(approvalRequest('session-1'));
+  assert.equal(await outcome, 'rejected');
+});
+
+test('approval: an abort signal settles cancelled (already aborted and mid-flight)', async () => {
+  const { bridge } = approvalBridge();
+  const alreadyAborted = new AbortController();
+  alreadyAborted.abort();
+  const first = bridge.submitApproval(approvalRequest('session-1', { signal: alreadyAborted.signal }));
+  assert.equal(await first, 'cancelled');
+
+  const midFlight = new AbortController();
+  const second = bridge.submitApproval(approvalRequest('session-1', { signal: midFlight.signal }));
+  midFlight.abort();
+  assert.equal(await second, 'cancelled');
+});
+
+test('approval: concurrent approvals resolve FIFO in reply order', async () => {
+  const { bridge } = approvalBridge();
+  const first = bridge.submitApproval(approvalRequest('session-1', { toolName: 'bash' }));
+  const second = bridge.submitApproval(approvalRequest('session-1', { toolName: 'read' }));
+  await new Promise((resolve) => setImmediate(resolve));
+  await bridge.accept(message('allow-3', '允许'));
+  assert.equal(await first, 'allowed-once');
+  await bridge.accept(message('deny-2', '拒绝'));
+  assert.equal(await second, 'rejected');
+});
+
+test('approval: normal messages resume once every approval settled', async () => {
+  const asked = [];
+  const fixture = stateFixture();
+  const status = createWeixinBridgeStatus();
+  const bridge = new WeixinHarnessBridge({
+    api: { sendText: async () => {} },
+    baseUrl: 'https://ilinkai.weixin.qq.com/',
+    token: 'host-token',
+    ownerUserId: 'owner-user',
+    harness: {
+      ensureRunning: async () => true,
+      sessionExists: async () => false,
+      createSession: async () => 'session-1',
+      ask: async (sessionId, text) => { asked.push({ sessionId, text }); return 'final-answer'; },
+    },
+    state: fixture.state,
+    status,
+    logger: { warn() {} },
+  });
+  const outcome = bridge.submitApproval(approvalRequest('session-1'));
+  await bridge.accept(message('allow-4', '允许'));
+  assert.equal(await outcome, 'allowed-once');
+  await bridge.accept(message('normal-1', '帮我算 1+1'));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(asked, [{ sessionId: 'session-1', text: '帮我算 1+1' }]);
+});
+
+test('approval: ownsSession matches only the mapped session', async () => {
+  const { bridge, fixture } = approvalBridge();
+  fixture.sessions.set('p2p:owner-user', 'session-a');
+  assert.equal(bridge.ownsSession('session-a'), true);
+  assert.equal(bridge.ownsSession('session-b'), false);
+});
+
+test("approval: a stranger cannot settle the owner's pending approval", async () => {
+  const { bridge, sent } = approvalBridge();
+  const outcome = bridge.submitApproval(approvalRequest('session-1'));
+  await bridge.accept(message('intruder-1', '允许', { from_user_id: 'other-user' }));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(sent.some(({ toUserId }) => toUserId === 'other-user'), false);
+  await bridge.accept(message('allow-5', '允许'));
+  assert.equal(await outcome, 'allowed-once');
+});

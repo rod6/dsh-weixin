@@ -130,6 +130,15 @@ export class WeixinController {
     return this.status();
   }
 
+  /** The running bridge that owns the given harness session, or null. */
+  bridgeForSession(sessionId) {
+    for (const runtime of this.#runtimes.values()) {
+      const bridge = runtime.bridge;
+      if (bridge && bridge.ownsSession(sessionId)) return bridge;
+    }
+    return null;
+  }
+
   async startProvisioning() {
     if (this.#closed) throw new Error('dsh-weixin controller is closed');
     if (this.#activeAttemptId) await this.cancelProvisioning(this.#activeAttemptId);

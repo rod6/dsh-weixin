@@ -29,6 +29,23 @@ function pluginPaths(config) {
   };
 }
 
+/**
+ * Best-effort per-session permission override for newly created sessions:
+ * appends the sandbox-mode and approval-policy events the harness folds on
+ * every read. In-process only; silently no-ops when the session is not live
+ * on this host (e.g. the plugin drives a remote harness).
+ */
+async function applySessionPolicy(ctx, sessionId, policy, logger) {
+  try {
+    const session = ctx.sessions?.get?.(sessionId);
+    if (!session || typeof session.append !== 'function') return;
+    if (policy.sandbox) session.append('sandbox/mode', { mode: policy.sandbox });
+    if (policy.approval) session.append('approval/policy', { policy: policy.approval });
+  } catch (error) {
+    logger?.warn?.('[dsh-weixin] failed to apply session permission policy:', error);
+  }
+}
+
 export async function createProductionController(ctx, config = {}, internals = {}) {
   if (!ctx?.credentials) throw new TypeError('dsh-weixin requires ctx.credentials');
   if (!ctx?.webServer) throw new TypeError('dsh-weixin requires ctx.webServer');
@@ -44,6 +61,18 @@ export async function createProductionController(ctx, config = {}, internals = {
     ? ctx.logger('dsh-weixin')
     : (ctx.logger ?? console);
   const paths = pluginPaths(config);
+  const approvals = config.approvals ?? {};
+  // Default 'ask': newly created sessions get workspace-write sandbox + the
+  // ask approval policy so approvals actually fire and reach the owner's
+  // WeChat. Set `approvals.sessionPolicy: 'inherit'` to keep the deployment
+  // default (e.g. danger-full-access, no prompts) instead.
+  const sessionPolicy = approvals.sessionPolicy === 'inherit'
+    ? null
+    : { sandbox: 'workspace-write', approval: 'ask' };
+  const approvalTimeoutMs = Number.isInteger(approvals.timeoutMs) ? approvals.timeoutMs : 300_000;
+  const resultPreviewChars = Number.isInteger(config.progress?.resultPreviewChars)
+    ? config.progress.resultPreviewChars
+    : 600;
   const configStore = await new ConfigStore(paths.config).load();
   const stateStores = new Map();
 
@@ -62,6 +91,9 @@ export async function createProductionController(ctx, config = {}, internals = {
     agentPreset: config.agentPreset ?? 'standard',
     autostart: false,
     dshBin: config.dshBin ?? 'dsh',
+    onSessionCreated: sessionPolicy
+      ? (sessionId) => applySessionPolicy(ctx, sessionId, sessionPolicy, logger)
+      : null,
   });
   const controller = new Controller({
     api,
@@ -78,6 +110,8 @@ export async function createProductionController(ctx, config = {}, internals = {
         state,
         replyTimeoutMs: config.replyTimeoutMs ?? 600_000,
         maxMessageChars: config.maxMessageChars ?? 4_000,
+        approvalTimeoutMs,
+        resultPreviewChars,
         logger: {
           error: (...args) => logger.error?.(`[${botId}]`, ...args),
           warn: (...args) => logger.warn?.(`[${botId}]`, ...args),
@@ -107,10 +141,29 @@ export async function createProductionController(ctx, config = {}, internals = {
     retryDelaysMs: config.retryDelaysMs,
     healthyIntervalMs: config.healthyIntervalMs,
   }).start();
+  // Approval answerer for this plugin's mapped sessions: forwards each
+  // harness approval/request to the owning account's WeChat and waits for the
+  // owner's 「允许」/「拒绝」 reply. `prepend` puts this answerer ahead of the
+  // web-UI answerer, which claims every request unconditionally; requests for
+  // sessions this plugin does not own fall through to `next()`.
+  const disposeApprovalAnswerer = typeof ctx.on === 'function'
+    ? ctx.on('approval/request', (req, next) => {
+      const bridge = controller.bridgeForSession(req?.agent?.session?.id);
+      if (!bridge) return next();
+      return bridge.submitApproval(req);
+    }, { prepend: true })
+    : null;
   return {
     controller,
     ready: supervisor.ready,
     async close() {
+      if (disposeApprovalAnswerer) {
+        try {
+          disposeApprovalAnswerer();
+        } catch (error) {
+          logger.warn?.('[dsh-weixin] failed to dispose the approval answerer:', error);
+        }
+      }
       await supervisor.close();
       await controller.close();
       harness.stopManagedProcess();
