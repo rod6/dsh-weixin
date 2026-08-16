@@ -1,15 +1,15 @@
 {
-  "name": "@xmanrui/dsh-weixin",
+  "name": "@rod6/dsh-weixin",
   "version": "0.1.0",
   "description": "DeepSeek Harness Weixin channel plugin with QR-code account binding",
   "license": "MIT",
   "type": "module",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/xmanrui/dsh-weixin.git"
+    "url": "git+https://github.com/rod6/dsh-weixin.git"
   },
-  "homepage": "https://github.com/xmanrui/dsh-weixin#readme",
-  "bugs": "https://github.com/xmanrui/dsh-weixin/issues",
+  "homepage": "https://github.com/rod6/dsh-weixin#readme",
+  "bugs": "https://github.com/rod6/dsh-weixin/issues",
   "publishConfig": {
     "access": "public"
   },

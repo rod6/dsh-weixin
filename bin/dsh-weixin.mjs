@@ -4,8 +4,8 @@ import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { isAbsolute, resolve } from 'node:path';
 
-const PACKAGE_NAME = '@xmanrui/dsh-weixin';
-const DEFAULT_SOURCE = 'github:xmanrui/dsh-weixin';
+const PACKAGE_NAME = '@rod6/dsh-weixin';
+const DEFAULT_SOURCE = 'github:rod6/dsh-weixin';
 
 function usage() {
   console.log(`Usage:
@@ -13,7 +13,7 @@ function usage() {
   dsh-weixin uninstall [--profile web]
 
 Examples:
-  npx -y github:xmanrui/dsh-weixin install
+  npx -y github:rod6/dsh-weixin install
   dsh-weixin install --source .`);
 }
 
