@@ -15,7 +15,7 @@
 ### 安装与扫码绑定
 
 ```bash
-npx -y github:xmanrui/dsh-weixin install
+npx -y github:rod6/dsh-weixin install
 ```
 
 安装后重启 `dsh web`，然后：
@@ -53,8 +53,8 @@ npx -y github:xmanrui/dsh-weixin install
 
 ```yaml
 - insert:
-    id: xmanrui-dsh-weixin
-    name: '@xmanrui/dsh-weixin'
+    id: rod6-dsh-weixin
+    name: '@rod6/dsh-weixin'
     config:
       approvals:
         sessionPolicy: ask      # ask（默认）| inherit（沿用部署默认，不主动改会话策略）
@@ -79,7 +79,7 @@ npx -y github:xmanrui/dsh-weixin install
 ### 本地开发与验证
 
 ```bash
-git clone https://github.com/xmanrui/dsh-weixin.git
+git clone https://github.com/rod6/dsh-weixin.git
 cd dsh-weixin
 npm install
 npm run check
@@ -105,7 +105,7 @@ Connect Tencent Weixin bots to DeepSeek Harness through QR-code authorization. T
 ### Install
 
 ```bash
-npx -y github:xmanrui/dsh-weixin install
+npx -y github:rod6/dsh-weixin install
 ```
 
 Restart `dsh web`, open **Settings → Plugins → Weixin**, generate a QR code, scan it with Weixin, confirm on the phone, and enter the displayed pairing digits if requested. The account is ready when the page reports a healthy iLink long-poll connection.
