@@ -44,7 +44,7 @@ npx -y github:rod6/dsh-weixin install
 - 每个微信用户映射到持久 Harness 会话，支持连续对话；
 - `/new` 清除当前会话映射，`/status` 检查连接，`/help` 显示帮助；
 - Harness 回答较长时会拆成多条微信文本，每条都沿用入站消息的 `context_token`；
-- 运行期间把中间过程转发到微信：每次工具调用发一条 `🔧 正在调用工具：<名称>`，工具返回后把**实际结果文本**（截断预览）发到微信，如 `⏳ fetch 完成：Fetch succeeded — title "…"`，最终回答照常发送；
+- 运行期间把中间过程**精简**转发到微信：进度消息**限流合并**（默认 1.5 秒窗口内多条进度只发最新一条），工具结果预览默认 **150 字符**、多行压成单行、超出截断，如 `⏳ fetch 完成：Fetch succeeded — title "…"`，最终回答照常发送；
 - Harness 需要用户批准的操作（如沙箱升级、越出会话工作区写文件）会以 `🔒 需要你批准：<工具>` 的形式发到微信，回复「允许 / 同意 / 是 / ok / yes」放行，回复「拒绝 / 取消 / 否 / no」拒绝；待批准期间其他消息会收到提示而不会误送入模型。
 
 ### 配置
@@ -60,11 +60,13 @@ npx -y github:rod6/dsh-weixin install
         sessionPolicy: ask      # ask（默认）| inherit（沿用部署默认，不主动改会话策略）
         timeoutMs: 300000       # 待批准请求超时（毫秒），超时自动拒绝（fail-closed）
       progress:
-        resultPreviewChars: 600 # 工具结果转发到微信时的预览长度（字符），超出截断
+        resultPreviewChars: 150 # 工具结果预览长度（字符），多行压成单行，超出截断
+        throttleMs: 1500        # 进度消息限流窗口（毫秒）：窗口内多条进度只发最新一条
 ```
 
 - `approvals.sessionPolicy: 'ask'`（默认）：新创建的微信会话设为 `workspace-write` 沙箱 + `ask` 审批策略，审批请求才会真正触发并转发到微信；设为 `'inherit'` 则沿用部署默认（例如 `danger-full-access`，不触发审批）。
-- `progress.resultPreviewChars`：工具结果预览长度，默认 600 字符，超出部分以 `…（已截断）` 结尾，避免刷屏。
+- `progress.resultPreviewChars`：工具结果预览长度，默认 150 字符，多行会压成单行，超出部分以 `…（已截断）` 结尾。
+- `progress.throttleMs`：进度消息限流窗口，默认 1500 毫秒；窗口内到达的多条进度（工具调用、结果预览）只发最新一条，避免刷屏。设为 `0` 则关闭限流、每条都发。
 - 审批应答只认绑定用户；多个并发审批按 FIFO 排队，逐条回复即可。
 
 ### 安全设计
@@ -112,4 +114,4 @@ Restart `dsh web`, open **Settings → Plugins → Weixin**, generate a QR code,
 
 The Weixin bot feature must already be available to the phone account. Tencent rolls out that feature independently; this plugin cannot enable it for an ineligible account.
 
-The current release supports direct text messages and voice messages that already contain Weixin transcription. It isolates credentials, sync cursors, deduplication, and Harness sessions per account. It also forwards intermediate progress (tool calls, plus a truncated preview of each tool's actual result text) and Harness approval prompts to the owner's WeChat: reply 「允许」/「同意」/「是」/「ok」/「yes」 to allow, 「拒绝」/「取消」/「否」/「no」 to reject. See the Chinese section for the complete behavior, security model, verification commands, and the plugin config (`approvals.sessionPolicy` / `approvals.timeoutMs` / `progress.resultPreviewChars`).
+The current release supports direct text messages and voice messages that already contain Weixin transcription. It isolates credentials, sync cursors, deduplication, and Harness sessions per account. It also forwards intermediate progress in compact form — tool-call lines plus a single-line, truncated preview of each tool's actual result text, throttled to one message per 1.5s by default (`progress.throttleMs`, `0` disables) — and Harness approval prompts to the owner's WeChat: reply 「允许」/「同意」/「是」/「ok」/「yes」 to allow, 「拒绝」/「取消」/「否」/「no」 to reject. See the Chinese section for the complete behavior, security model, verification commands, and the plugin config (`approvals.sessionPolicy` / `approvals.timeoutMs` / `progress.resultPreviewChars` / `progress.throttleMs`).

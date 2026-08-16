@@ -54,8 +54,12 @@ export class WeixinHarnessBridge {
   #maxMessageChars;
   #approvalTimeoutMs;
   #resultPreviewChars;
+  #progressThrottleMs;
   #queues = new Map();
   #pendingApprovals = new Map();
+  #pendingProgress = null;
+  #progressTimer = null;
+  #outbox = Promise.resolve();
 
   constructor({
     api,
@@ -69,7 +73,8 @@ export class WeixinHarnessBridge {
     replyTimeoutMs = 600_000,
     maxMessageChars = 4_000,
     approvalTimeoutMs = 300_000,
-    resultPreviewChars = 600,
+    resultPreviewChars = 150,
+    progressThrottleMs = 1_500,
   }) {
     if (!api || typeof api.sendText !== 'function') throw new TypeError('Weixin API is required');
     if (!baseUrl || !token || !ownerUserId) throw new TypeError('Weixin account credentials are required');
@@ -86,6 +91,7 @@ export class WeixinHarnessBridge {
     this.#maxMessageChars = maxMessageChars;
     this.#approvalTimeoutMs = approvalTimeoutMs;
     this.#resultPreviewChars = resultPreviewChars;
+    this.#progressThrottleMs = progressThrottleMs;
   }
 
   get status() {
@@ -250,12 +256,13 @@ export class WeixinHarnessBridge {
         resultPreviewChars: this.#resultPreviewChars,
         onUpdate: async (update) => {
           if (update?.type === 'tool' && typeof update.name === 'string') {
-            await this.#send(sender, `🔧 正在调用工具：${update.name}`, contextToken, runId);
+            await this.#forwardProgress(sender, `🔧 正在调用工具：${update.name}`, contextToken, runId);
           } else if (update?.type === 'status' && typeof update.text === 'string') {
-            await this.#send(sender, `⏳ ${update.text}`, contextToken, runId);
+            await this.#forwardProgress(sender, `⏳ ${update.text}`, contextToken, runId);
           }
         },
       });
+      await this.#flushProgress(sender, contextToken, runId);
       await this.#send(sender, answer, contextToken, runId);
       await this.#state.markSeen(messageId);
       this.#status.messagesReplied += 1;
@@ -284,5 +291,44 @@ export class WeixinHarnessBridge {
         runId,
       });
     }
+  }
+
+  /**
+   * Forward one live progress line, coalescing bursts: at most one progress
+   * message per `progressThrottleMs`, always the latest pending line. Rapid
+   * tool events (calls + results) collapse into a single message instead of
+   * one message per event.
+   */
+  async #forwardProgress(toUserId, text, contextToken, runId) {
+    if (this.#progressThrottleMs <= 0) {
+      await this.#send(toUserId, text, contextToken, runId);
+      return;
+    }
+    this.#pendingProgress = text;
+    if (this.#progressTimer !== null) return;
+    this.#progressTimer = setTimeout(() => {
+      this.#progressTimer = null;
+      const pending = this.#pendingProgress;
+      this.#pendingProgress = null;
+      if (pending) this.#enqueueProgress(toUserId, pending, contextToken, runId);
+    }, this.#progressThrottleMs);
+  }
+
+  /** Send any throttled progress line now and wait for the outbox to drain. */
+  async #flushProgress(toUserId, contextToken, runId) {
+    if (this.#progressTimer !== null) {
+      clearTimeout(this.#progressTimer);
+      this.#progressTimer = null;
+    }
+    const pending = this.#pendingProgress;
+    this.#pendingProgress = null;
+    if (pending) this.#enqueueProgress(toUserId, pending, contextToken, runId);
+    await this.#outbox;
+  }
+
+  #enqueueProgress(toUserId, text, contextToken, runId) {
+    const send = () => this.#send(toUserId, text, contextToken, runId)
+      .catch((error) => this.#logger.warn?.('[dsh-weixin] failed to send a progress message:', error));
+    this.#outbox = this.#outbox.then(send, send);
   }
 }

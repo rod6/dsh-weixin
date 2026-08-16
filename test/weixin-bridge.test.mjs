@@ -248,3 +248,86 @@ test("approval: a stranger cannot settle the owner's pending approval", async ()
   await bridge.accept(message('allow-5', '允许'));
   assert.equal(await outcome, 'allowed-once');
 });
+
+function progressBridge({ progressThrottleMs = 1_500, ...rest } = {}) {
+  const sent = [];
+  const fixture = stateFixture();
+  const status = createWeixinBridgeStatus();
+  const updates = [];
+  const bridge = new WeixinHarnessBridge({
+    api: { sendText: async (request) => sent.push(request) },
+    baseUrl: 'https://ilinkai.weixin.qq.com/',
+    token: 'host-token',
+    ownerUserId: 'owner-user',
+    harness: {
+      ensureRunning: async () => true,
+      sessionExists: async () => true,
+      createSession: async () => 'session-1',
+      ask: async (_sessionId, _text, options) => {
+        for (const update of updates) await options.onUpdate?.(update);
+        return 'final-answer';
+      },
+    },
+    state: fixture.state,
+    status,
+    progressThrottleMs,
+    ...rest,
+  });
+  return { bridge, sent, updates, fixture };
+}
+
+test('progress: a burst of tool events collapses to the latest message before the answer', async () => {
+  const { bridge, sent, updates } = progressBridge({ progressThrottleMs: 30 });
+  updates.push(
+    { type: 'tool', name: 'bash' },
+    { type: 'status', text: 'bash 完成：结果' },
+  );
+  await bridge.accept(message('prog-1', '跑一下'));
+  assert.deepEqual(sent.map(({ text }) => text), ['⏳ bash 完成：结果', 'final-answer']);
+});
+
+test('progress: events spaced beyond the throttle window produce one message per event', async () => {
+  const sent = [];
+  const fixture = stateFixture();
+  const bridge = new WeixinHarnessBridge({
+    api: { sendText: async (request) => sent.push(request) },
+    baseUrl: 'https://ilinkai.weixin.qq.com/',
+    token: 'host-token',
+    ownerUserId: 'owner-user',
+    harness: {
+      ensureRunning: async () => true,
+      sessionExists: async () => true,
+      createSession: async () => 'session-1',
+      ask: async (_sessionId, _text, options) => {
+        await options.onUpdate?.({ type: 'tool', name: 'bash' });
+        await new Promise((resolve) => setTimeout(resolve, 60));
+        await options.onUpdate?.({ type: 'status', text: 'bash 完成：结果' });
+        await new Promise((resolve) => setTimeout(resolve, 60));
+        return 'final-answer';
+      },
+    },
+    state: fixture.state,
+    status: createWeixinBridgeStatus(),
+    progressThrottleMs: 25,
+  });
+  await bridge.accept(message('prog-2', '跑一下'));
+  assert.deepEqual(sent.map(({ text }) => text), [
+    '🔧 正在调用工具：bash',
+    '⏳ bash 完成：结果',
+    'final-answer',
+  ]);
+});
+
+test('progress: throttle disabled (0) sends every update immediately', async () => {
+  const { bridge, sent, updates } = progressBridge({ progressThrottleMs: 0 });
+  updates.push(
+    { type: 'tool', name: 'bash' },
+    { type: 'status', text: 'bash 完成：结果' },
+  );
+  await bridge.accept(message('prog-3', '跑一下'));
+  assert.deepEqual(sent.map(({ text }) => text), [
+    '🔧 正在调用工具：bash',
+    '⏳ bash 完成：结果',
+    'final-answer',
+  ]);
+});

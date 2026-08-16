@@ -72,7 +72,10 @@ export async function createProductionController(ctx, config = {}, internals = {
   const approvalTimeoutMs = Number.isInteger(approvals.timeoutMs) ? approvals.timeoutMs : 300_000;
   const resultPreviewChars = Number.isInteger(config.progress?.resultPreviewChars)
     ? config.progress.resultPreviewChars
-    : 600;
+    : 150;
+  const progressThrottleMs = Number.isInteger(config.progress?.throttleMs)
+    ? config.progress.throttleMs
+    : 1_500;
   const configStore = await new ConfigStore(paths.config).load();
   const stateStores = new Map();
 
@@ -112,6 +115,7 @@ export async function createProductionController(ctx, config = {}, internals = {
         maxMessageChars: config.maxMessageChars ?? 4_000,
         approvalTimeoutMs,
         resultPreviewChars,
+        progressThrottleMs,
         logger: {
           error: (...args) => logger.error?.(`[${botId}]`, ...args),
           warn: (...args) => logger.warn?.(`[${botId}]`, ...args),

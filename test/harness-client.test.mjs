@@ -94,3 +94,25 @@ test('reply tracker falls back to a processing line when a tool result has no te
   const result = tracker.consume([toolResultEvent(4, '')]);
   assert.deepEqual(result, { type: 'status', text: '正在整理bash的结果…' });
 });
+
+test('reply tracker flattens multi-line tool results into one compact preview line', () => {
+  const tracker = new HarnessReplyTracker({ promptRpcId: 'p', afterSeq: 0 });
+  tracker.consume([
+    { event: { seq: 1, type: 'turn/start', data: { turn: 1 } } },
+    { event: { seq: 2, type: 'user/message', data: { turn: 1, source: { rpcId: 'p' } } } },
+    { event: { seq: 3, type: 'tool/call', data: { turn: 1, step: 0, callId: 'c1', name: 'list' } } },
+  ]);
+  const result = tracker.consume([toolResultEvent(4, '第一行\n\n第二行\t带制表   收尾')]);
+  assert.deepEqual(result, { type: 'status', text: 'list 完成：第一行 第二行 带制表 收尾' });
+});
+
+test('reply tracker caps previews at the default 150 characters', () => {
+  const tracker = new HarnessReplyTracker({ promptRpcId: 'p', afterSeq: 0 });
+  tracker.consume([
+    { event: { seq: 1, type: 'turn/start', data: { turn: 1 } } },
+    { event: { seq: 2, type: 'user/message', data: { turn: 1, source: { rpcId: 'p' } } } },
+    { event: { seq: 3, type: 'tool/call', data: { turn: 1, step: 0, callId: 'c1', name: 'read' } } },
+  ]);
+  const result = tracker.consume([toolResultEvent(4, 'x'.repeat(200))]);
+  assert.match(result.text, /read 完成：x{150}…（已截断）/);
+});

@@ -34,7 +34,7 @@ export class HarnessReplyTracker {
   #lastToolName = null;
   #resultPreviewChars;
 
-  constructor({ promptRpcId, afterSeq = -1, resultPreviewChars = 600 }) {
+  constructor({ promptRpcId, afterSeq = -1, resultPreviewChars = 150 }) {
     this.#promptRpcId = promptRpcId;
     this.#lastSeq = afterSeq;
     this.#resultPreviewChars = resultPreviewChars;
@@ -113,12 +113,14 @@ export class HarnessReplyTracker {
         this.#lastToolName = event.data?.name ?? '工具';
         update = { type: 'tool', name: this.#lastToolName };
       } else if (event.type === 'tool/result') {
-        const text = toolResultText(event);
+        const raw = toolResultText(event);
         const name = this.#lastToolName ?? '工具';
-        if (text) {
-          const preview = text.length > this.#resultPreviewChars
-            ? `${text.slice(0, this.#resultPreviewChars)}…（已截断）`
-            : text;
+        if (raw) {
+          // Flatten the result to one line so the WeChat message stays compact.
+          const flat = raw.replace(/\s+/g, ' ').trim();
+          const preview = flat.length > this.#resultPreviewChars
+            ? `${flat.slice(0, this.#resultPreviewChars)}…（已截断）`
+            : flat;
           update = { type: 'status', text: `${name} 完成：${preview}` };
         } else {
           update = { type: 'status', text: `正在整理${name}的结果…` };
@@ -253,7 +255,7 @@ export class HarnessClient {
     const tracker = new HarnessReplyTracker({
       promptRpcId,
       afterSeq: baselineSeq,
-      resultPreviewChars: options.resultPreviewChars ?? 600,
+      resultPreviewChars: options.resultPreviewChars ?? 150,
     });
 
     await this.rpc('session.prompt', {
